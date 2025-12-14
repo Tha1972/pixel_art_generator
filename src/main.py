@@ -45,12 +45,12 @@ def sample(
 
         if t > 0:
             noise = torch.randn_like(x)
-            noise = noise * 1.2
+            # noise = noise * 1.2
             x = x + torch.sqrt(beta) * noise
 
     return x
 
-def generate_images(imgage_count):
+def generate_images(imgage_count, model, device="cuda"):
     images = []
 
     for _ in range(imgage_count):
@@ -66,10 +66,20 @@ def generate_images(imgage_count):
     return images
 
 
-def train_and_save_model():
+def train_and_save_model(label_selected):
+    """
+    Labels:
+    1 -> [1. 0. 0. 0. 0.] -> Enemies with swords   
+    2 -> [0. 1. 0. 0. 0.] -> Enemies  
+    3 -> [0. 0. 1. 0. 0.] -> Items, foods   
+    4 -> [0. 0. 0. 1. 0.] -> Armor, swords, wearable or equipable items    
+    5 -> [0. 0. 0. 0. 1.] -> Characters
+
+    PS: I figured out the different labels myself, their names were not written.
+    """
     model = UNet()
 
-    dataset = ImageFolderDataset("data/images/images")
+    dataset = ImageFolderDataset("data/images/images", label_selected=label_selected)
     dataloader = DataLoader(
         dataset,
         batch_size=16,
@@ -80,21 +90,21 @@ def train_and_save_model():
     train_diffusion(
         model=model,
         dataloader=dataloader,
-        epochs=50,
+        epochs=25,
         lr=1e-4,
         num_timesteps=100,
         device="cuda"  
     )
 
-    torch.save(model.state_dict(), "models/unet_diffusion.pth")
+    torch.save(model.state_dict(), f"models/unet_diffusion_label{label_selected}.pth")
 
 if __name__ == "__main__":
-    # train_and_save_model()
+    train_and_save_model(label_selected=5)
   
     device = "cuda" 
 
     model = UNet()
-    model.load_state_dict(torch.load("models/unet_diffusion.pth", map_location=device))
+    model.load_state_dict(torch.load("models/unet_diffusion_label5.pth", map_location=device))
     model.to(device)
 
     scheduler = LinearNoiseScheduler(
@@ -103,7 +113,7 @@ if __name__ == "__main__":
         beta_end=0.02
         )
 
-    images = generate_images(4)
+    images = generate_images(16, model)
 
     n_cols = 4
     n_rows = math.ceil(len(images) / n_cols)

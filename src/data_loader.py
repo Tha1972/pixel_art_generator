@@ -7,9 +7,20 @@ import os
 import pandas as pd
 
 class ImageFolderDataset(Dataset):
-    def __init__(self, image_dir):
+    def __init__(self, image_dir, label_selected):
+
+        label_map = {
+            1: "[1. 0. 0. 0. 0.]",
+            2: "[0. 1. 0. 0. 0.]",
+            3: "[0. 0. 1. 0. 0.]",
+            4: "[0. 0. 0. 1. 0.]",
+            5: "[0. 0. 0. 0. 1.]",
+        }
+
+        selected_label = label_map[label_selected]
+
         df = pd.read_csv("data/labels.csv")
-        first_label_paths = df[df["Label"] == "[1. 0. 0. 0. 0.]"]["Image Path"].tolist()
+        first_label_paths = df[df["Label"] == selected_label]["Image Path"].tolist()
         filtered_paths = [i.split("/")[2].split(".")[0] for i in first_label_paths]
 
         self.image_paths = [

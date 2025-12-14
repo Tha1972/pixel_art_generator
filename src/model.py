@@ -15,11 +15,23 @@ from helpers import diffusion_loss
 
 Input: 16x16x3
 
-Encoder:    
-EL1(16x16x3) -> EL2(8x8x32) -> EL3(4x4x64)
+Encoder:
+EL1 (16x16x3)   -> (16x16x64)
+Down1           -> (8x8x64)
+EL2 (8x8x64)    -> (8x8x128)
+Down2           -> (4x4x128)
+
+Bottleneck:
+BL  (4x4x128)   -> (4x4x256)
 
 Decoder:
-DL1(4x4x64) -> DL2(8x8x32) -> DL3(16x16x3)
+Up1             -> (8x8x256)
+DL1 (8x8x256+128) -> (8x8x128)
+Up2             -> (16x16x128)
+DL2 (16x16x128+64) -> (16x16x64)
+
+Output:
+OL  (16x16x64)  -> (16x16x3)
 
 """
 class UNet(nn.Module):
