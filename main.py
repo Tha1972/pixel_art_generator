@@ -8,178 +8,115 @@ from noise_scheduler import LinearNoiseScheduler
 from torch.utils.data import Dataset
 import os
 from torch.utils.data import DataLoader
+from helpers import diffusion_loss
+from model import UNet, train_diffusion
+from data_loader import ImageFolderDataset
+import matplotlib.pyplot as plt
+import math
 
 
-""" U-Net Architecture
+@torch.no_grad()
+def sample(
+    model,
+    scheduler,
+    generated_image=None,
+    image_size=16,
+    device="mps",
+):
+    model.eval()
 
-Input: 16x16x3
+    if generated_image is not None:
+        x = generated_image.to(device)
+    else:
+        x = torch.randn(1, 3, image_size, image_size, device=device)
 
-Encoder:    
-EL1(16x16x3) -> EL2(8x8x32) -> EL3(4x4x64)
+    for t in reversed(range(scheduler.num_timesteps)):
+        t_tensor = torch.tensor([t], device=device)
 
-Decoder:
-DL1(4x4x64) -> DL2(8x8x32) -> DL3(16x16x3)
+        pred_noise = model(x, t_tensor)
 
-"""
+        alpha = scheduler.alphas[t]
+        alpha_bar = scheduler.alpha_cum_prod[t]
+        beta = scheduler.betas[t]
 
-class UNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        # Downsample (Encoder)
-        self.e_conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1)
-        self.e_down1 = nn.Conv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1)
-
-        self.e_conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
-        self.e_down2 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1)
-
-        # Upsample (Decoder)
-        self.d_conv1 = nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, padding=1)
-        self.d_up1 = nn.Upsample(scale_factor=2)
-
-        self.d_conv2 = nn.Conv2d(in_channels=96, out_channels=3, kernel_size=3, padding=1)
-        self.d_up2 = nn.Upsample(scale_factor=2)
-
-        # Output
-        self.out = nn.Conv2d(in_channels=35, out_channels=3, kernel_size=1)
-
-        # Time Embeddings
-        self.time_mlp = nn.Sequential(
-            nn.Linear(1, 64),
-            nn.SiLU(),
-            nn.Linear(64, 64)
+        x = (1 / torch.sqrt(alpha)) * (
+            x - (beta / torch.sqrt(1 - alpha_bar)) * pred_noise
         )
 
-    def forward(self, x, t):
-        # Encoder
-        e1 = F.silu(self.e_conv1(x))         
-        x = F.silu(self.e_down1(e1))        
+        if t > 0:
+            noise = torch.randn_like(x)
+            noise = noise * 1.2
+            x = x + torch.sqrt(beta) * noise
 
-        e2 = F.silu(self.e_conv2(x))         
-        x = F.silu(self.e_down2(e2))   
+    return x
 
-        # Time embeddings
-        t = t.float().unsqueeze(1)    
-        t_emb = self.time_mlp(t)
-        x = x + t_emb[:, :, None, None]
+def generate_images(imgage_count):
+    images = []
 
-        # Decoder
-        x = F.silu(self.d_conv1(x))       
-        x = self.d_up1(x)                  
+    for _ in range(imgage_count):
+        sampled = sample(model, scheduler, image_size=16, device=device)
 
-        x = torch.cat([x, e2], dim=1)      
-        x = F.silu(self.d_conv2(x))      
+        img = sampled.squeeze(0)
+        img = (img + 1) / 2
+        img = img.clamp(0, 1)
+        img = img.permute(1, 2, 0).cpu().numpy()
 
-        x = self.d_up2(x)                 
-        x = torch.cat([x, e1], dim=1)  
+        images.append(img)
 
-        x = self.out(x)       
-
-        return x
-        
-
-class ImageFolderDataset(Dataset):
-    def __init__(self, image_dir):
-        self.image_paths = [
-            os.path.join(image_dir, f)
-            for f in os.listdir(image_dir)
-        ]
-
-        self.image_paths = self.image_paths[:2000]
-
-    def __len__(self):
-        return len(self.image_paths)
-
-    def __getitem__(self, idx):
-        img = Image.open(self.image_paths[idx]).convert("RGB")
-        img = np.array(img)
-
-        img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
-        img = img * 2 - 1            # normalize to [-1, 1]
-
-        return img
+    return images
 
 
-def q_sample(x0, t, scheduler):
-    noise = torch.randn_like(x0)
+def train_and_save_model():
+    model = UNet()
 
-    sqrt_ab = scheduler.sqrt_alpha_cum_prod[t][:, None, None, None]
-    sqrt_omab = scheduler.sqrt_one_minus_alpha_cum_prod[t][:, None, None, None]
+    dataset = ImageFolderDataset("data/images/images")
+    dataloader = DataLoader(
+        dataset,
+        batch_size=16,
+        shuffle=True,
+        drop_last=True
+    )
 
-    x_t = sqrt_ab * x0 + sqrt_omab * noise
-    return x_t, noise
+    train_diffusion(
+        model=model,
+        dataloader=dataloader,
+        epochs=50,
+        lr=1e-4,
+        num_timesteps=100,
+        device="cuda"  
+    )
 
-def diffusion_loss(model, x0, scheduler):
-    B = x0.size(0)
-    device = x0.device
+    torch.save(model.state_dict(), "models/unet_diffusion.pth")
 
-    t = torch.randint(0, scheduler.num_timesteps, (B,), device=device)
+if __name__ == "__main__":
+    # train_and_save_model()
+  
+    device = "cuda" 
 
-    x_t, noise = q_sample(x0, t, scheduler)
-    pred_noise = model(x_t, t)
-
-    return F.mse_loss(pred_noise, noise)
-
-def train_diffusion(
-    model,
-    dataloader,
-    epochs,
-    lr=1e-4,
-    num_timesteps=100,
-    device="cpu"
-):
+    model = UNet()
+    model.load_state_dict(torch.load("models/unet_diffusion.pth", map_location=device))
     model.to(device)
-    model.train()
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     scheduler = LinearNoiseScheduler(
-        num_timesteps=num_timesteps,
+        num_timesteps=100,
         beta_start=1e-4,
         beta_end=0.02
         )
 
-    for epoch in range(epochs):
-        total_loss = 0.0
+    images = generate_images(4)
 
-        for i, images in enumerate(dataloader):
-            images = images.to(device)
+    n_cols = 4
+    n_rows = math.ceil(len(images) / n_cols)
 
-            loss = diffusion_loss(model, images, scheduler)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 2, n_rows * 2))
+    axes = axes.flatten()
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+    for ax, img in zip(axes, images):
+        ax.imshow(img)
+        ax.axis("off")
 
-            total_loss += loss.item()
+    for ax in axes[len(images):]:
+        ax.axis("off")
 
-        avg_loss = total_loss / len(dataloader)
-        print(f"Epoch [{epoch+1}/{epochs}] | Loss: {avg_loss:.6f}")
-
-
-def get_image():
-    img = Image.open("data/images/images/image_88627.JPEG")
-    arr = np.array(img)
-    return arr
-
-
-model = UNet()
-
-dataset = ImageFolderDataset("data/images/images")
-dataloader = DataLoader(
-    dataset,
-    batch_size=16,
-    shuffle=True,
-    drop_last=True
-)
-
-print("Starting train")
-train_diffusion(
-    model=model,
-    dataloader=dataloader,
-    epochs=50,
-    lr=1e-4,
-    num_timesteps=100,
-    device="cpu"   # or "cuda"
-)
-
+    plt.tight_layout()
+    plt.show()
